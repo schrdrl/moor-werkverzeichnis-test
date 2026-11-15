@@ -1,0 +1,64 @@
+name: Daten prüfen und veröffentlichen
+
+# Prueft jeden Pull Request, bevor er nach main kommt: Schema, IDs, Verweise und
+# RDF mit validate.py, dazu den MeLODy-Export. Die Verwaltung der Website zeigt das
+# Ergebnis an und laesst erst nach gruener Pruefung zusammenfuehren. Schema und Skripte
+# kommen immer aktuell aus der Vorlage (pruefung.yml dort), die Kopien in diesem Repo
+# spielen fuer die Pruefung keine Rolle. Die Vorlage prueft sich selbst samt Beispielen.
+#
+# Nach jedem Push auf main wird danach die Website gebaut:
+# - In einem Projekt-Repo, das aus dieser Vorlage entstanden ist, baut der gemeinsame
+#   Workflow aus nikilachniki/gfbm-werkverzeichnisse-frontend die Seite mit den Daten
+#   aus data/ und veroeffentlicht sie auf den Pages dieses Repos. Einmalig: Settings >
+#   Pages > Source auf "GitHub Actions".
+# - In der Vorlage selbst (Haken "Template repository", derzeit
+#   nikilachniki/gfbm-werkverzeichnisse) wird stattdessen die Seite des Frontend-Repos neu
+#   gebaut, die den Lasso-Auszug zeigt. Dafuer braucht es das Secret FRONTEND_DEPLOY_TOKEN
+#   (frueher LASSODB_DEPLOY_TOKEN), einen fein granularen Token fuer
+#   nikilachniki/gfbm-werkverzeichnisse-frontend mit Actions (lesen und schreiben). Fehlt
+#   es, wird der Schritt uebersprungen.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pruefen:
+    uses: nikilachniki/gfbm-werkverzeichnisse/.github/workflows/pruefung.yml@main
+    with:
+      folders: ${{ github.event.repository.is_template && 'data examples/*/' || 'data' }}
+      vorlage-ref: ${{ github.event.repository.is_template && github.sha || 'main' }}
+
+  website:
+    needs: pruefen
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && !github.event.repository.is_template
+    uses: nikilachniki/gfbm-werkverzeichnisse-frontend/.github/workflows/website.yml@main
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    with:
+      data-path: data
+
+  frontend-neu-bauen:
+    needs: pruefen
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.event.repository.is_template
+    runs-on: ubuntu-latest
+    steps:
+      - name: Neubau der Frontend-Seite anstossen
+        env:
+          TOKEN: ${{ secrets.FRONTEND_DEPLOY_TOKEN || secrets.LASSODB_DEPLOY_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "Kein FRONTEND_DEPLOY_TOKEN eingerichtet, die Website wird nicht neu gebaut."
+            exit 0
+          fi
+          curl --fail-with-body -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/nikilachniki/gfbm-werkverzeichnisse-frontend/actions/workflows/deploy.yml/dispatches \
+            -d '{"ref":"main"}'
